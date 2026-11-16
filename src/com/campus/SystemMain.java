@@ -11,19 +11,19 @@ import java.util.List;
 import java.util.Scanner;
 
 /**
- * V1.3 IO 文件持久化：用户数据落盘，程序重启不丢失。
+ * V1.4 自定义异常：业务错误统一用中文友好提示，屏蔽原生异常堆栈。
  *
- * <p>本版本相对 V1.2 的变化：
+ * <p>本版本相对 V1.3 的变化：
  * <ol>
- *   <li>新增工具类 {@link FileUtil}，封装文件创建 / 读取 / 写入；</li>
- *   <li>用户数据持久化到 user.txt，程序启动自动加载；</li>
- *   <li>注册成功后自动写入文件，重启程序数据不丢失；</li>
- *   <li>文件格式：username,password,role,registerTime（逗号分隔）。</li>
+ *   <li>新增异常父类 {@link BusinessException} 与 4 个业务子异常；</li>
+ *   <li>校验方法由「返回 boolean」改为「不合法直接抛异常」，主流程更清爽；</li>
+ *   <li>登录 / 注册 / 参数校验处主动抛出自定义异常；</li>
+ *   <li>程序入口统一捕获，只打印中文提示，绝不打印 printStackTrace。</li>
  * </ol>
  * </p>
  *
  * @author 课程设计
- * @version V1.3
+ * @version V1.4
  */
 public class SystemMain {
 
@@ -50,7 +50,7 @@ public class SystemMain {
     /** 持久化文件字段分隔符 */
     private static final String SEPARATOR = ",";
 
-    /** 注册时间格式化器（与 User 的展示格式保持一致） */
+    /** 注册时间格式化器 */
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /** 全部用户对象 */
@@ -60,17 +60,25 @@ public class SystemMain {
     private final Scanner scanner = new Scanner(System.in);
 
     /**
-     * 程序入口。
+     * 程序入口：最外层兜底捕获，保证任何异常都不会把堆栈直接抛给用户。
      *
      * @param args 命令行参数（未使用）
      */
     public static void main(String[] args) {
         initConsoleEncoding();
-        new SystemMain().start();
+        try {
+            new SystemMain().start();
+        } catch (BusinessException e) {
+            // 业务异常：只输出中文友好提示
+            System.out.println("操作失败：" + e.getMessage());
+        } catch (RuntimeException e) {
+            // 系统异常：屏蔽堆栈，仅提示联系管理员
+            System.out.println("系统异常：操作未能完成，请联系管理员。");
+        }
     }
 
     /**
-     * 启动主循环：先加载持久化数据，再进入菜单。
+     * 启动主循环：加载数据 → 菜单分发，单次操作异常不影响本轮会话。
      */
     private void start() {
         loadUsers();
@@ -82,16 +90,23 @@ public class SystemMain {
             if (choice == null) {
                 break;
             }
-            if ("1".equals(choice)) {
-                doLogin();
-            } else if ("2".equals(choice)) {
-                doRegister();
-            } else if ("3".equals(choice)) {
-                showAllUsers();
-            } else if ("0".equals(choice)) {
-                running = false;
-            } else {
-                System.out.println("无效的菜单序号，请输入 1、2、3 或 0。");
+            try {
+                if ("1".equals(choice)) {
+                    doLogin();
+                } else if ("2".equals(choice)) {
+                    doRegister();
+                } else if ("3".equals(choice)) {
+                    showAllUsers();
+                } else if ("0".equals(choice)) {
+                    running = false;
+                } else {
+                    System.out.println("无效的菜单序号，请输入 1、2、3 或 0。");
+                }
+            } catch (BusinessException e) {
+                // 业务异常统一在此转为友好提示，不打印堆栈
+                System.out.println("操作失败：" + e.getMessage());
+            } catch (RuntimeException e) {
+                System.out.println("系统异常：操作未能完成，请稍后重试。");
             }
         }
         System.out.println("系统已退出，感谢使用。");
@@ -99,7 +114,7 @@ public class SystemMain {
     }
 
     /**
-     * 从 user.txt 加载用户数据；首次运行（文件为空）时初始化内置管理员并落盘。
+     * 从 user.txt 加载用户数据；首次运行初始化内置管理员并落盘。
      */
     private void loadUsers() {
         List<String> lines = FileUtil.readAllLines(USER_FILE);
@@ -111,7 +126,6 @@ public class SystemMain {
         }
         System.out.println("[持久化] 已从 " + USER_FILE + " 加载 " + userList.size() + " 个用户。");
         if (userList.isEmpty()) {
-            // 首次启动：初始化内置管理员账号，保证管理端可用
             userList.add(new User("admin", "123456", User.ROLE_ADMIN, LocalDateTime.now()));
             saveUsers();
             System.out.println("[持久化] 首次运行，已初始化内置管理员账号 admin / 123456。");
@@ -122,7 +136,7 @@ public class SystemMain {
      * 解析一行用户数据。
      *
      * @param line 文本行
-     * @return 解析成功返回 User，格式非法返回 null（跳过该行，不中断启动）
+     * @return 解析成功返回 User，格式非法返回 null
      */
     private User parseUser(String line) {
         String[] parts = line.split(SEPARATOR, 4);
@@ -152,7 +166,7 @@ public class SystemMain {
     /** 打印系统横幅。 */
     private void showBanner() {
         System.out.println("==================================================");
-        System.out.println("        校园资源预约管理系统  V1.3（文件持久化）");
+        System.out.println("        校园资源预约管理系统  V1.4（自定义异常）");
         System.out.println("==================================================");
         System.out.println("内置管理员账号：admin / 123456；数据文件：" + USER_FILE);
     }
@@ -169,59 +183,33 @@ public class SystemMain {
     }
 
     /**
-     * 登录流程。
+     * 登录流程：校验失败直接抛出自定义异常，由上层统一转为友好提示。
      */
     private void doLogin() {
-        String username = readLine("请输入账号：");
-        if (username == null) {
-            return;
-        }
-        String password = readLine("请输入密码：");
-        if (password == null) {
-            return;
-        }
+        String username = requireText(readLine("请输入账号："), "账号");
+        String password = requireText(readLine("请输入密码："), "密码");
         User user = findByUsername(username);
-        if (user == null) {
-            System.out.println("登录失败：该账号不存在，请先注册。");
-        } else if (!user.getPassword().equals(password)) {
-            System.out.println("登录失败：密码错误，请重新输入。");
-        } else {
-            System.out.println("登录成功！欢迎您，" + user.getRoleName() + "【" + user.getUsername() + "】。");
-            System.out.println("提示：V1.3 尚未实现业务菜单，资源与预约功能将在任务6、任务9 迭代。");
+        if (!user.getPassword().equals(password)) {
+            throw new PasswordErrorException();
         }
+        System.out.println("登录成功！欢迎您，" + user.getRoleName() + "【" + user.getUsername() + "】。");
+        System.out.println("提示：V1.4 尚未实现业务菜单，资源与预约功能将在任务6、任务9 迭代。");
     }
 
     /**
-     * 注册流程：校验通过后构建 User 实体 → 加入内存集合 → 立即落盘持久化。
+     * 注册流程：账号格式、唯一性、密码强度全部通过校验后才落盘。
      */
     private void doRegister() {
-        String username = readLine("请输入注册账号：");
-        if (username == null) {
-            return;
+        String username = requireText(readLine("请输入注册账号："), "账号");
+        checkUsernameFormat(username);
+        if (existsUsername(username)) {
+            throw new UserAlreadyExistsException(username);
         }
-        if (!checkUsername(username)) {
-            System.out.println("注册失败：账号不能为空，不能包含空白字符或英文逗号。");
-            return;
-        }
-        if (findByUsername(username) != null) {
-            System.out.println("注册失败：账号【" + username + "】已存在，请更换账号。");
-            return;
-        }
-        String password = readLine("请输入注册密码（长度不少于 " + MIN_PASSWORD_LENGTH + " 位）：");
-        if (password == null) {
-            return;
-        }
-        if (!checkPassword(password)) {
-            System.out.println("注册失败：密码不能为空，且长度不能少于 " + MIN_PASSWORD_LENGTH + " 位。");
-            return;
-        }
-        String confirmPassword = readLine("请再次输入密码确认：");
-        if (confirmPassword == null) {
-            return;
-        }
+        String password = requireText(readLine("请输入注册密码（长度不少于 " + MIN_PASSWORD_LENGTH + " 位）："), "密码");
+        checkPasswordFormat(password);
+        String confirmPassword = requireText(readLine("请再次输入密码确认："), "确认密码");
         if (!password.equals(confirmPassword)) {
-            System.out.println("注册失败：两次输入的密码不一致。");
-            return;
+            throw ParamEmptyException.illegal("两次输入的密码不一致，请重新注册。");
         }
         User user = new User(username, password, User.ROLE_STUDENT, LocalDateTime.now());
         userList.add(user);
@@ -245,10 +233,10 @@ public class SystemMain {
     }
 
     /**
-     * 按账号查找用户对象。
+     * 按账号查找用户对象，找不到抛出 {@link UserNotFoundException}。
      *
      * @param username 账号
-     * @return 找到返回 User 对象，找不到返回 null
+     * @return 用户对象
      */
     private User findByUsername(String username) {
         for (User user : userList) {
@@ -256,34 +244,58 @@ public class SystemMain {
                 return user;
             }
         }
-        return null;
+        throw new UserNotFoundException(username);
     }
 
     /**
-     * 账号校验（抽离出的独立校验方法）。
+     * 判断账号是否已存在（注册查重用，不抛异常）。
      *
-     * @param username 待校验账号
-     * @return 合法返回 true
+     * @param username 账号
+     * @return 已存在返回 true
      */
-    private boolean checkUsername(String username) {
-        if (username == null || username.isEmpty()) {
-            return false;
+    private boolean existsUsername(String username) {
+        for (User user : userList) {
+            if (user.getUsername().equals(username)) {
+                return true;
+            }
         }
-        // 逗号是持久化文件的分隔符，账号中禁止出现，避免数据被截断
+        return false;
+    }
+
+    /**
+     * 必填文本校验。
+     *
+     * @param value     待校验内容
+     * @param fieldName 参数中文名
+     * @return 校验通过的原值
+     */
+    private String requireText(String value, String fieldName) {
+        if (value == null || value.trim().isEmpty()) {
+            throw ParamEmptyException.empty(fieldName);
+        }
+        return value.trim();
+    }
+
+    /**
+     * 账号格式校验：不能包含空白字符与持久化分隔符。
+     *
+     * @param username 账号
+     */
+    private void checkUsernameFormat(String username) {
         if (username.indexOf(' ') >= 0 || username.indexOf('\t') >= 0 || username.indexOf(',') >= 0) {
-            return false;
+            throw ParamEmptyException.illegal("账号不能包含空白字符或英文逗号。");
         }
-        return true;
     }
 
     /**
-     * 密码合法性校验（抽离出的独立校验方法）。
+     * 密码强度校验：长度不得小于约定值。
      *
-     * @param password 待校验密码
-     * @return 合法返回 true
+     * @param password 密码
      */
-    private boolean checkPassword(String password) {
-        return password != null && password.length() >= MIN_PASSWORD_LENGTH;
+    private void checkPasswordFormat(String password) {
+        if (password.length() < MIN_PASSWORD_LENGTH) {
+            throw ParamEmptyException.illegal("密码长度不能少于 " + MIN_PASSWORD_LENGTH + " 位。");
+        }
     }
 
     /**
