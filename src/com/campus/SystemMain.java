@@ -3,28 +3,29 @@ package com.campus;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
-import java.util.HashMap;
-import java.util.Map;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Scanner;
 
 /**
- * V1.1 用户注册功能：改造控制台首页菜单，新增动态注册能力。
+ * V1.2 面向对象封装：User 实体类重构后的控制台主流程。
  *
- * <p>本版本相对 V1.0 的变化：
+ * <p>本版本相对 V1.1 的变化：
  * <ol>
- *   <li>删除 V1.0 硬编码固定账号，全部改用动态集合数据；</li>
- *   <li>首页菜单改为「1.登录  2.注册  0.退出」；</li>
- *   <li>使用 HashMap&lt;String, String&gt; 内存存储用户账号密码；</li>
- *   <li>注册支持非空校验、密码长度 ≥ 6 校验、用户名唯一查重；</li>
- *   <li>抽离独立校验方法（账号校验、密码合法性校验），减少主流程冗余代码。</li>
+ *   <li>新增实体类 {@link User}，承载账号、密码、角色、注册时间；</li>
+ *   <li>用户存储由 HashMap&lt;String, String&gt; 升级为 List&lt;User&gt;；</li>
+ *   <li>登录成功后按角色输出身份欢迎提示（管理员 / 学生）；</li>
+ *   <li>内置管理员账号首次启动初始化，注册入口固定创建学生账号；</li>
+ *   <li>新增「查看已注册用户」菜单，验证角色与注册时间完整保存。</li>
  * </ol>
  * </p>
  *
- * <p>版本约束：本阶段仍不做分层、不抽工具类（分层重构在任务10）。</p>
+ * <p>版本约束：本阶段仍不做分层（分层重构在任务10）。</p>
  *
  * @author 课程设计
- * @version V1.1
+ * @version V1.2
  */
 public class SystemMain {
 
@@ -45,8 +46,8 @@ public class SystemMain {
     /** 密码最小长度约束 */
     private static final int MIN_PASSWORD_LENGTH = 6;
 
-    /** 用户账号密码内存存储：key = 用户名，value = 密码 */
-    private final Map<String, String> userStore = new HashMap<String, String>();
+    /** 全部用户对象 */
+    private final List<User> userList = new ArrayList<User>();
 
     /** 控制台输入器 */
     private final Scanner scanner = new Scanner(System.in);
@@ -62,9 +63,10 @@ public class SystemMain {
     }
 
     /**
-     * 启动主循环：展示首页菜单，分发登录 / 注册 / 退出指令。
+     * 启动主循环。
      */
     private void start() {
+        initAdmin();
         showBanner();
         boolean running = true;
         while (running) {
@@ -77,22 +79,34 @@ public class SystemMain {
                 doLogin();
             } else if ("2".equals(choice)) {
                 doRegister();
+            } else if ("3".equals(choice)) {
+                showAllUsers();
             } else if ("0".equals(choice)) {
                 running = false;
             } else {
-                System.out.println("无效的菜单序号，请输入 1、2 或 0。");
+                System.out.println("无效的菜单序号，请输入 1、2、3 或 0。");
             }
         }
         System.out.println("系统已退出，感谢使用。");
         scanner.close();
     }
 
+    /**
+     * 初始化内置管理员账号，保证管理端功能可用。
+     * 避免登录逻辑中再次出现 V1.0 式的硬编码判断。
+     */
+    private void initAdmin() {
+        User admin = new User("admin", "123456", User.ROLE_ADMIN, LocalDateTime.now());
+        userList.add(admin);
+    }
+
     /** 打印系统横幅。 */
     private void showBanner() {
         System.out.println("==================================================");
-        System.out.println("        校园资源预约管理系统  V1.1（登录 + 注册）");
+        System.out.println("        校园资源预约管理系统  V1.2（用户实体化）");
         System.out.println("==================================================");
-        System.out.println("提示：V1.1 已取消内置账号，请先注册账号再登录。");
+        System.out.println("内置管理员账号：admin / 123456");
+        System.out.println("学生账号请通过「注册」菜单创建。");
     }
 
     /** 打印首页菜单。 */
@@ -101,12 +115,13 @@ public class SystemMain {
         System.out.println("---------------- 首页菜单 ----------------");
         System.out.println("  1. 登录");
         System.out.println("  2. 注册");
+        System.out.println("  3. 查看已注册用户");
         System.out.println("  0. 退出系统");
         System.out.println("------------------------------------------");
     }
 
     /**
-     * 登录流程：读取账号密码，校验是否与内存集合中的记录一致。
+     * 登录流程：按账号查找 User 对象，再比对密码，最后按角色输出欢迎语。
      */
     private void doLogin() {
         String username = readLine("请输入账号：");
@@ -117,19 +132,19 @@ public class SystemMain {
         if (password == null) {
             return;
         }
-        String storedPassword = userStore.get(username);
-        if (storedPassword == null) {
+        User user = findByUsername(username);
+        if (user == null) {
             System.out.println("登录失败：该账号不存在，请先注册。");
-        } else if (!storedPassword.equals(password)) {
+        } else if (!user.getPassword().equals(password)) {
             System.out.println("登录失败：密码错误，请重新输入。");
         } else {
-            System.out.println("登录成功！欢迎您，" + username + "。");
-            System.out.println("提示：V1.1 仅实现登录与注册，业务菜单将在任务6 迭代。");
+            System.out.println("登录成功！欢迎您，" + user.getRoleName() + "【" + user.getUsername() + "】。");
+            System.out.println("提示：V1.2 尚未实现业务菜单，资源与预约功能将在任务6、任务9 迭代。");
         }
     }
 
     /**
-     * 注册流程：账号校验 → 密码合法性校验 → 用户名唯一查重 → 写入内存集合。
+     * 注册流程：账号校验 → 唯一查重 → 密码校验 → 构建 User 实体并加入集合。
      */
     private void doRegister() {
         String username = readLine("请输入注册账号：");
@@ -137,10 +152,10 @@ public class SystemMain {
             return;
         }
         if (!checkUsername(username)) {
-            System.out.println("注册失败：账号不能为空，且不能包含空格。");
+            System.out.println("注册失败：账号不能为空，且不能包含空白字符。");
             return;
         }
-        if (!checkUsernameUnique(username)) {
+        if (findByUsername(username) != null) {
             System.out.println("注册失败：账号【" + username + "】已存在，请更换账号。");
             return;
         }
@@ -160,8 +175,40 @@ public class SystemMain {
             System.out.println("注册失败：两次输入的密码不一致。");
             return;
         }
-        userStore.put(username, password);
-        System.out.println("注册成功！账号【" + username + "】已创建，当前系统用户总数：" + userStore.size() + "。");
+        // 注册入口只能创建学生账号，管理员账号由系统内置
+        User user = new User(username, password, User.ROLE_STUDENT, LocalDateTime.now());
+        userList.add(user);
+        System.out.println("注册成功！当前系统用户总数：" + userList.size() + "。");
+        System.out.println("您的账号信息：" + user);
+    }
+
+    /** 打印全部已注册用户，用于验证角色、注册时间等字段完整保存。 */
+    private void showAllUsers() {
+        System.out.println();
+        System.out.println("---------------- 已注册用户列表 ----------------");
+        if (userList.isEmpty()) {
+            System.out.println("当前没有任何用户。");
+            return;
+        }
+        for (int i = 0; i < userList.size(); i++) {
+            System.out.println((i + 1) + ". " + userList.get(i));
+        }
+        System.out.println("共 " + userList.size() + " 位用户。");
+    }
+
+    /**
+     * 按账号查找用户对象。
+     *
+     * @param username 账号
+     * @return 找到返回 User 对象，找不到返回 null（V1.2 尚未引入统一返回结构）
+     */
+    private User findByUsername(String username) {
+        for (User user : userList) {
+            if (user.getUsername().equals(username)) {
+                return user;
+            }
+        }
+        return null;
     }
 
     /**
@@ -174,7 +221,6 @@ public class SystemMain {
         if (username == null || username.isEmpty()) {
             return false;
         }
-        // 账号中不允许出现空白字符
         return username.indexOf(' ') < 0 && username.indexOf('\t') < 0;
     }
 
@@ -186,16 +232,6 @@ public class SystemMain {
      */
     private boolean checkPassword(String password) {
         return password != null && password.length() >= MIN_PASSWORD_LENGTH;
-    }
-
-    /**
-     * 用户名唯一查重。
-     *
-     * @param username 待校验账号
-     * @return 不存在同名账号返回 true
-     */
-    private boolean checkUsernameUnique(String username) {
-        return !userStore.containsKey(username);
     }
 
     /**
