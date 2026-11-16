@@ -5,27 +5,25 @@ import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
 
 /**
- * V1.2 面向对象封装：User 实体类重构后的控制台主流程。
+ * V1.3 IO 文件持久化：用户数据落盘，程序重启不丢失。
  *
- * <p>本版本相对 V1.1 的变化：
+ * <p>本版本相对 V1.2 的变化：
  * <ol>
- *   <li>新增实体类 {@link User}，承载账号、密码、角色、注册时间；</li>
- *   <li>用户存储由 HashMap&lt;String, String&gt; 升级为 List&lt;User&gt;；</li>
- *   <li>登录成功后按角色输出身份欢迎提示（管理员 / 学生）；</li>
- *   <li>内置管理员账号首次启动初始化，注册入口固定创建学生账号；</li>
- *   <li>新增「查看已注册用户」菜单，验证角色与注册时间完整保存。</li>
+ *   <li>新增工具类 {@link FileUtil}，封装文件创建 / 读取 / 写入；</li>
+ *   <li>用户数据持久化到 user.txt，程序启动自动加载；</li>
+ *   <li>注册成功后自动写入文件，重启程序数据不丢失；</li>
+ *   <li>文件格式：username,password,role,registerTime（逗号分隔）。</li>
  * </ol>
  * </p>
  *
- * <p>版本约束：本阶段仍不做分层（分层重构在任务10）。</p>
- *
  * @author 课程设计
- * @version V1.2
+ * @version V1.3
  */
 public class SystemMain {
 
@@ -46,6 +44,15 @@ public class SystemMain {
     /** 密码最小长度约束 */
     private static final int MIN_PASSWORD_LENGTH = 6;
 
+    /** 用户数据持久化文件 */
+    private static final String USER_FILE = "user.txt";
+
+    /** 持久化文件字段分隔符 */
+    private static final String SEPARATOR = ",";
+
+    /** 注册时间格式化器（与 User 的展示格式保持一致） */
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
     /** 全部用户对象 */
     private final List<User> userList = new ArrayList<User>();
 
@@ -63,10 +70,10 @@ public class SystemMain {
     }
 
     /**
-     * 启动主循环。
+     * 启动主循环：先加载持久化数据，再进入菜单。
      */
     private void start() {
-        initAdmin();
+        loadUsers();
         showBanner();
         boolean running = true;
         while (running) {
@@ -92,21 +99,62 @@ public class SystemMain {
     }
 
     /**
-     * 初始化内置管理员账号，保证管理端功能可用。
-     * 避免登录逻辑中再次出现 V1.0 式的硬编码判断。
+     * 从 user.txt 加载用户数据；首次运行（文件为空）时初始化内置管理员并落盘。
      */
-    private void initAdmin() {
-        User admin = new User("admin", "123456", User.ROLE_ADMIN, LocalDateTime.now());
-        userList.add(admin);
+    private void loadUsers() {
+        List<String> lines = FileUtil.readAllLines(USER_FILE);
+        for (String line : lines) {
+            User user = parseUser(line);
+            if (user != null) {
+                userList.add(user);
+            }
+        }
+        System.out.println("[持久化] 已从 " + USER_FILE + " 加载 " + userList.size() + " 个用户。");
+        if (userList.isEmpty()) {
+            // 首次启动：初始化内置管理员账号，保证管理端可用
+            userList.add(new User("admin", "123456", User.ROLE_ADMIN, LocalDateTime.now()));
+            saveUsers();
+            System.out.println("[持久化] 首次运行，已初始化内置管理员账号 admin / 123456。");
+        }
+    }
+
+    /**
+     * 解析一行用户数据。
+     *
+     * @param line 文本行
+     * @return 解析成功返回 User，格式非法返回 null（跳过该行，不中断启动）
+     */
+    private User parseUser(String line) {
+        String[] parts = line.split(SEPARATOR, 4);
+        if (parts.length < 4) {
+            return null;
+        }
+        try {
+            LocalDateTime registerTime = LocalDateTime.parse(parts[3].trim(), FORMATTER);
+            return new User(parts[0].trim(), parts[1].trim(), parts[2].trim(), registerTime);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 把内存中的用户列表整体写回 user.txt。
+     */
+    private void saveUsers() {
+        List<String> lines = new ArrayList<String>();
+        for (User user : userList) {
+            lines.add(user.getUsername() + SEPARATOR + user.getPassword() + SEPARATOR
+                    + user.getRole() + SEPARATOR + user.getRegisterTime().format(FORMATTER));
+        }
+        FileUtil.writeAllLines(USER_FILE, lines);
     }
 
     /** 打印系统横幅。 */
     private void showBanner() {
         System.out.println("==================================================");
-        System.out.println("        校园资源预约管理系统  V1.2（用户实体化）");
+        System.out.println("        校园资源预约管理系统  V1.3（文件持久化）");
         System.out.println("==================================================");
-        System.out.println("内置管理员账号：admin / 123456");
-        System.out.println("学生账号请通过「注册」菜单创建。");
+        System.out.println("内置管理员账号：admin / 123456；数据文件：" + USER_FILE);
     }
 
     /** 打印首页菜单。 */
@@ -121,7 +169,7 @@ public class SystemMain {
     }
 
     /**
-     * 登录流程：按账号查找 User 对象，再比对密码，最后按角色输出欢迎语。
+     * 登录流程。
      */
     private void doLogin() {
         String username = readLine("请输入账号：");
@@ -139,12 +187,12 @@ public class SystemMain {
             System.out.println("登录失败：密码错误，请重新输入。");
         } else {
             System.out.println("登录成功！欢迎您，" + user.getRoleName() + "【" + user.getUsername() + "】。");
-            System.out.println("提示：V1.2 尚未实现业务菜单，资源与预约功能将在任务6、任务9 迭代。");
+            System.out.println("提示：V1.3 尚未实现业务菜单，资源与预约功能将在任务6、任务9 迭代。");
         }
     }
 
     /**
-     * 注册流程：账号校验 → 唯一查重 → 密码校验 → 构建 User 实体并加入集合。
+     * 注册流程：校验通过后构建 User 实体 → 加入内存集合 → 立即落盘持久化。
      */
     private void doRegister() {
         String username = readLine("请输入注册账号：");
@@ -152,7 +200,7 @@ public class SystemMain {
             return;
         }
         if (!checkUsername(username)) {
-            System.out.println("注册失败：账号不能为空，且不能包含空白字符。");
+            System.out.println("注册失败：账号不能为空，不能包含空白字符或英文逗号。");
             return;
         }
         if (findByUsername(username) != null) {
@@ -175,14 +223,14 @@ public class SystemMain {
             System.out.println("注册失败：两次输入的密码不一致。");
             return;
         }
-        // 注册入口只能创建学生账号，管理员账号由系统内置
         User user = new User(username, password, User.ROLE_STUDENT, LocalDateTime.now());
         userList.add(user);
-        System.out.println("注册成功！当前系统用户总数：" + userList.size() + "。");
+        saveUsers();
+        System.out.println("注册成功！数据已写入 " + USER_FILE + "，当前用户总数：" + userList.size() + "。");
         System.out.println("您的账号信息：" + user);
     }
 
-    /** 打印全部已注册用户，用于验证角色、注册时间等字段完整保存。 */
+    /** 打印全部已注册用户。 */
     private void showAllUsers() {
         System.out.println();
         System.out.println("---------------- 已注册用户列表 ----------------");
@@ -200,7 +248,7 @@ public class SystemMain {
      * 按账号查找用户对象。
      *
      * @param username 账号
-     * @return 找到返回 User 对象，找不到返回 null（V1.2 尚未引入统一返回结构）
+     * @return 找到返回 User 对象，找不到返回 null
      */
     private User findByUsername(String username) {
         for (User user : userList) {
@@ -221,7 +269,11 @@ public class SystemMain {
         if (username == null || username.isEmpty()) {
             return false;
         }
-        return username.indexOf(' ') < 0 && username.indexOf('\t') < 0;
+        // 逗号是持久化文件的分隔符，账号中禁止出现，避免数据被截断
+        if (username.indexOf(' ') >= 0 || username.indexOf('\t') >= 0 || username.indexOf(',') >= 0) {
+            return false;
+        }
+        return true;
     }
 
     /**
