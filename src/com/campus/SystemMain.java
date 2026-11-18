@@ -7,26 +7,26 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Scanner;
+import java.util.stream.Collectors;
 
 /**
- * V2.1 统一返回结果封装：所有业务方法不再返回 boolean / 裸对象 / null，统一返回 {@link Result}。
+ * V2.2 函数式编程：用 Stream + Lambda + Optional 重构全部集合查询。
  *
- * <p>本版本相对 V2.0 的变化：
+ * <p>本版本相对 V2.1 的变化：
  * <ol>
- *   <li>新增泛型结果类 {@link Result}（success / fail 四个静态工厂）；</li>
- *   <li>用户模块与资源模块的业务方法全部改为返回 Result；</li>
- *   <li>控制台统一处理结果：成功打印提示并按类型展示 data，失败只打印 msg；</li>
- *   <li>业务异常仍照常抛出，由菜单层统一捕获并包装成 {@code Result.fail(...)}；</li>
- *   <li>「资源不存在」改由 {@code Result.fail} 表达，不再需要专用异常类。</li>
+ *   <li>资源集合的遍历全部由 for 循环改为 Stream 流式调用（旧写法以注释保留对比）；</li>
+ *   <li>新增按名称模糊查询、按状态 + 名称多条件组合查询，结果按资源 ID 升序；</li>
+ *   <li>单个资源 / 单个用户的查找改用 {@link Optional}，用它显式表达「可能不存在」；</li>
+ *   <li>Result 返回结构、异常机制、持久化格式全部保持不变。</li>
  * </ol>
  * </p>
  *
- * <p>版本约束：本阶段仍不分层，为任务 10 的三层架构重构保留「痛点」。</p>
- *
  * @author 课程设计
- * @version V2.1
+ * @version V2.2
  */
 public class SystemMain {
 
@@ -47,6 +47,9 @@ public class SystemMain {
 
     /** 注册时间格式化器 */
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    /** 资源排序规则：按编号升序 */
+    private static final Comparator<CampusResource> BY_ID = Comparator.comparing(CampusResource::getId);
 
     /** 全部用户对象 */
     private final List<User> userList = new ArrayList<User>();
@@ -136,7 +139,7 @@ public class SystemMain {
     /** 打印系统横幅。 */
     private void showBanner() {
         System.out.println("==================================================");
-        System.out.println("    校园资源预约管理系统  V2.1（统一返回结果）");
+        System.out.println("    校园资源预约管理系统  V2.2（函数式编程）");
         System.out.println("==================================================");
         System.out.println("内置管理员账号：admin / 123456");
         System.out.println("数据文件：" + USER_FILE + "（用户）、" + RESOURCE_FILE + "（资源）");
@@ -196,18 +199,28 @@ public class SystemMain {
     }
 
     /**
-     * 按账号查询用户。
+     * 按账号查询用户：用 Optional 表达「可能找不到」。
+     *
+     * <p>重构前（for 循环版，保留注释用于对比）：</p>
+     * <pre>
+     * for (User user : userList) {
+     *     if (user.getUsername().equals(username)) {
+     *         return Result.success("查询成功", user);
+     *     }
+     * }
+     * return Result.fail("账号不存在……");
+     * </pre>
      *
      * @param username 账号
-     * @return 查询结果，失败时 msg 说明原因
+     * @return 查询结果
      */
     private Result<User> findByUsername(String username) {
-        for (User user : userList) {
-            if (user.getUsername().equals(username)) {
-                return Result.success("查询成功", user);
-            }
-        }
-        return Result.fail("账号【" + username + "】不存在，请确认后重试或先注册。");
+        Optional<User> optional = userList.stream()
+                .filter(user -> user.getUsername().equals(username))
+                .findFirst();
+        return optional
+                .map(user -> Result.success("查询成功", user))
+                .orElseGet(() -> Result.fail("账号【" + username + "】不存在，请确认后重试或先注册。"));
     }
 
     /**
@@ -260,7 +273,7 @@ public class SystemMain {
     // ================================================== 管理员菜单
 
     /**
-     * 管理员菜单：资源的完整增删改查权限。
+     * 管理员菜单：资源的完整增删改查权限 + 多条件查询。
      *
      * @param admin 当前登录的管理员
      */
@@ -273,6 +286,7 @@ public class SystemMain {
             System.out.println("  2. 查询全部资源");
             System.out.println("  3. 修改资源信息");
             System.out.println("  4. 删除资源");
+            System.out.println("  5. 资源条件查询（状态 + 名称模糊）");
             System.out.println("  0. 退出登录");
             System.out.println("--------------------------------------");
             String choice = readLine("请选择功能：");
@@ -292,8 +306,10 @@ public class SystemMain {
                     showResult(updateResource(admin));
                 } else if ("4".equals(choice)) {
                     showResult(deleteResource(admin));
+                } else if ("5".equals(choice)) {
+                    showResult(queryResourceByCondition(admin));
                 } else {
-                    showResult(Result.fail("无效的菜单序号，请输入 1、2、3、4 或 0。"));
+                    showResult(Result.fail("无效的菜单序号，请输入 1、2、3、4、5 或 0。"));
                 }
             } catch (BusinessException e) {
                 showResult(Result.fail(e.getMessage()));
@@ -328,18 +344,28 @@ public class SystemMain {
     }
 
     /**
-     * 查询全部资源业务。
+     * 查询全部资源业务：Stream 收集 + 按编号升序。
+     *
+     * <p>重构前（for 循环版，保留注释用于对比）：</p>
+     * <pre>
+     * List&lt;CampusResource&gt; all = new ArrayList&lt;&gt;();
+     * for (CampusResource resource : resourceList) {
+     *     all.add(resource);
+     * }
+     * </pre>
      *
      * @param admin 操作人
      * @return Result&lt;List&lt;CampusResource&gt;&gt; 资源列表
      */
     private Result<List<CampusResource>> listAllResources(User admin) {
         requireAdmin(admin, "查询全部资源");
-        if (resourceList.isEmpty()) {
+        List<CampusResource> all = resourceList.stream()
+                .sorted(BY_ID)
+                .collect(Collectors.toList());
+        if (all.isEmpty()) {
             return Result.fail("当前没有任何资源，请先新增。");
         }
-        return Result.success("共查询到 " + resourceList.size() + " 条资源。",
-                new ArrayList<CampusResource>(resourceList));
+        return Result.success("共查询到 " + all.size() + " 条资源。", all);
     }
 
     /**
@@ -387,7 +413,7 @@ public class SystemMain {
     }
 
     /**
-     * 删除资源业务：存在预约记录的资源禁止删除（任务 9 接入预约模块后生效）。
+     * 删除资源业务：存在预约记录的资源禁止删除。
      *
      * @param admin 操作人
      * @return Result&lt;Void&gt; 删除结果
@@ -407,6 +433,26 @@ public class SystemMain {
         return Result.success("资源【" + id + "】已删除。");
     }
 
+    /**
+     * 按条件查询资源：状态可留空，名称支持模糊匹配，结果按编号升序。
+     *
+     * @param admin 操作人
+     * @return Result&lt;List&lt;CampusResource&gt;&gt; 查询结果
+     */
+    private Result<List<CampusResource>> queryResourceByCondition(User admin) {
+        requireAdmin(admin, "资源条件查询");
+        String statusText = readLine("状态筛选（1.可预约 2.占用 3.停用，留空表示不限）：");
+        ResourceStatus status = null;
+        if (statusText != null && !statusText.isEmpty()) {
+            status = ResourceStatus.parse(statusText);
+            if (status == null) {
+                throw ParamEmptyException.illegal("状态只能是 1（可预约）、2（占用）、3（停用）或留空。");
+            }
+        }
+        String keyword = readLine("名称关键字（留空表示不限）：");
+        return filterResources(status, keyword == null ? "" : keyword.trim());
+    }
+
     // ================================================== 学生菜单
 
     /**
@@ -420,6 +466,7 @@ public class SystemMain {
             System.out.println();
             System.out.println("------------- 学生菜单 -------------");
             System.out.println("  1. 查看可预约资源");
+            System.out.println("  2. 按名称搜索可预约资源");
             System.out.println("  0. 退出登录");
             System.out.println("------------------------------------");
             String choice = readLine("请选择功能：");
@@ -433,8 +480,11 @@ public class SystemMain {
             try {
                 if ("1".equals(choice)) {
                     showResult(listAvailableResources());
+                } else if ("2".equals(choice)) {
+                    String keyword = readLine("请输入资源名称关键字：");
+                    showResult(filterResources(ResourceStatus.AVAILABLE, keyword == null ? "" : keyword.trim()));
                 } else {
-                    showResult(Result.fail("无效的菜单序号，请输入 1 或 0。"));
+                    showResult(Result.fail("无效的菜单序号，请输入 1、2 或 0。"));
                 }
             } catch (BusinessException e) {
                 showResult(Result.fail(e.getMessage()));
@@ -445,17 +495,25 @@ public class SystemMain {
     }
 
     /**
-     * 查询可预约资源：自动过滤掉占用与停用的资源。
+     * 查询可预约资源：Stream 过滤掉占用与停用，按编号升序。
+     *
+     * <p>重构前（for 循环版，保留注释用于对比）：</p>
+     * <pre>
+     * List&lt;CampusResource&gt; available = new ArrayList&lt;&gt;();
+     * for (CampusResource resource : resourceList) {
+     *     if (resource.isAvailable()) {
+     *         available.add(resource);
+     *     }
+     * }
+     * </pre>
      *
      * @return Result&lt;List&lt;CampusResource&gt;&gt; 可预约资源列表
      */
     private Result<List<CampusResource>> listAvailableResources() {
-        List<CampusResource> available = new ArrayList<CampusResource>();
-        for (CampusResource resource : resourceList) {
-            if (resource.isAvailable()) {
-                available.add(resource);
-            }
-        }
+        List<CampusResource> available = resourceList.stream()
+                .filter(CampusResource::isAvailable)
+                .sorted(BY_ID)
+                .collect(Collectors.toList());
         if (available.isEmpty()) {
             return Result.fail("当前没有可预约的资源。");
         }
@@ -466,9 +524,6 @@ public class SystemMain {
 
     /**
      * 统一展示结果：成功打印提示并按类型展示数据，失败只打印提示。
-     *
-     * <p>这里只依赖 Result 的 success / msg / data 三个属性，
-     * 不关心业务内部怎么实现（迪米特法则）。</p>
      *
      * @param result 业务结果
      */
@@ -490,6 +545,55 @@ public class SystemMain {
         }
     }
 
+    // ================================================== 资源查询核心
+
+    /**
+     * 多条件组合查询：状态 + 名称模糊（忽略大小写），结果按编号升序。
+     *
+     * <p>这是本版本的核心方法：把「做什么」（筛选、排序）和「怎么做」（循环）解耦。</p>
+     *
+     * @param status  状态条件，null 表示不限
+     * @param keyword 名称关键字，空串表示不限
+     * @return Result&lt;List&lt;CampusResource&gt;&gt; 查询结果
+     */
+    private Result<List<CampusResource>> filterResources(ResourceStatus status, String keyword) {
+        List<CampusResource> matched = resourceList.stream()
+                .filter(resource -> status == null || status.equals(resource.getStatus()))
+                .filter(resource -> keyword.isEmpty()
+                        || resource.getName().toLowerCase().contains(keyword.toLowerCase()))
+                .sorted(BY_ID)
+                .collect(Collectors.toList());
+        if (matched.isEmpty()) {
+            return Result.fail("没有符合条件的资源。");
+        }
+        return Result.success("共查询到 " + matched.size() + " 条资源。", matched);
+    }
+
+    /**
+     * 按资源编号查询资源：Optional 显式表达「可能不存在」。
+     *
+     * <p>重构前（for 循环版，保留注释用于对比）：</p>
+     * <pre>
+     * for (CampusResource resource : resourceList) {
+     *     if (resource.getId().equals(id)) {
+     *         return Result.success("查询成功", resource);
+     *     }
+     * }
+     * return Result.fail("未找到……");
+     * </pre>
+     *
+     * @param id 资源编号
+     * @return 查询结果
+     */
+    private Result<CampusResource> findResourceById(String id) {
+        Optional<CampusResource> optional = resourceList.stream()
+                .filter(resource -> resource.getId().equals(id))
+                .findFirst();
+        return optional
+                .map(resource -> Result.success("查询成功", resource))
+                .orElseGet(() -> Result.fail("未找到 ID 为【" + id + "】的资源。"));
+    }
+
     // ================================================== 资源业务辅助
 
     /**
@@ -506,24 +610,9 @@ public class SystemMain {
     }
 
     /**
-     * 按资源编号查询资源。
-     *
-     * @param id 资源编号
-     * @return 查询结果，找不到时 msg 说明原因
-     */
-    private Result<CampusResource> findResourceById(String id) {
-        for (CampusResource resource : resourceList) {
-            if (resource.getId().equals(id)) {
-                return Result.success("查询成功", resource);
-            }
-        }
-        return Result.fail("未找到 ID 为【" + id + "】的资源。");
-    }
-
-    /**
      * 判断资源是否已有预约记录。
      *
-     * <p>任务 7 阶段预约模块尚未开发，这里先返回 false；
+     * <p>任务 8 阶段预约模块尚未开发，这里先返回 false；
      * 任务 9 接入 ReserveRecord 后会替换为真实判断。</p>
      *
      * @param resourceId 资源编号
@@ -536,20 +625,24 @@ public class SystemMain {
     /**
      * 生成下一个资源编号，形如 R001、R002。
      *
+     * <p>用 Stream 求已有编号的最大值，替代手工维护计数器。</p>
+     *
      * @return 新编号
      */
     private String nextResourceId() {
-        int max = 0;
-        for (CampusResource resource : resourceList) {
-            String id = resource.getId();
-            if (id != null && id.startsWith(RESOURCE_ID_PREFIX)) {
-                try {
-                    max = Math.max(max, Integer.parseInt(id.substring(RESOURCE_ID_PREFIX.length())));
-                } catch (NumberFormatException ignored) {
-                    // 编号格式异常的数据直接跳过，不影响新编号生成
-                }
-            }
-        }
+        int max = resourceList.stream()
+                .map(CampusResource::getId)
+                .filter(id -> id != null && id.startsWith(RESOURCE_ID_PREFIX))
+                .map(id -> id.substring(RESOURCE_ID_PREFIX.length()))
+                .mapToInt(text -> {
+                    try {
+                        return Integer.parseInt(text);
+                    } catch (NumberFormatException e) {
+                        return 0;
+                    }
+                })
+                .max()
+                .orElse(0);
         return RESOURCE_ID_PREFIX + String.format("%03d", max + 1);
     }
 
@@ -601,18 +694,15 @@ public class SystemMain {
     // ================================================== 通用校验
 
     /**
-     * 判断账号是否已存在（注册查重用，不抛异常）。
+     * 判断账号是否已存在（注册查重用）。
+     *
+     * <p>重构前（for 循环版）：遍历并 return true / false。</p>
      *
      * @param username 账号
      * @return 已存在返回 true
      */
     private boolean existsUsername(String username) {
-        for (User user : userList) {
-            if (user.getUsername().equals(username)) {
-                return true;
-            }
-        }
-        return false;
+        return userList.stream().anyMatch(user -> user.getUsername().equals(username));
     }
 
     /**
